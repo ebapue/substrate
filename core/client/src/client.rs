@@ -427,7 +427,7 @@ impl<B, E, Block, RA> Client<B, E, Block, RA> where
 
 	/// Reads given header and generates CHT-based header proof.
 	pub fn header_proof(&self, id: &BlockId<Block>) -> error::Result<(Block::Header, Vec<Vec<u8>>)> {
-		self.header_proof_with_cht_size(id, cht::SIZE)
+		self.header_proof_with_cht_size(id, cht::size())
 	}
 
 	/// Get block hash by number.
@@ -436,7 +436,11 @@ impl<B, E, Block, RA> Client<B, E, Block, RA> where
 	}
 
 	/// Reads given header and generates CHT-based header proof for CHT of given size.
-	pub fn header_proof_with_cht_size(&self, id: &BlockId<Block>, cht_size: u64) -> error::Result<(Block::Header, Vec<Vec<u8>>)> {
+	pub fn header_proof_with_cht_size(
+		&self,
+		id: &BlockId<Block>,
+		cht_size: NumberFor<Block>,
+	) -> error::Result<(Block::Header, Vec<Vec<u8>>)> {
 		let proof_error = || error::Error::Backend(format!("Failed to generate header proof for {:?}", id));
 		let header = self.backend.blockchain().expect_header(*id)?;
 		let block_num = *header.number();
@@ -517,7 +521,7 @@ impl<B, E, Block, RA> Client<B, E, Block, RA> where
 			min,
 			max,
 			key,
-			cht::SIZE,
+			cht::size(),
 		)
 	}
 
@@ -529,7 +533,7 @@ impl<B, E, Block, RA> Client<B, E, Block, RA> where
 		min: Block::Hash,
 		max: Block::Hash,
 		key: &StorageKey,
-		cht_size: u64,
+		cht_size: NumberFor<Block>,
 	) -> error::Result<ChangesProof<Block::Header>> {
 		struct AccessedRootsRecorder<'a, Block: BlockT> {
 			storage: &'a ChangesTrieStorage<Blake2Hasher>,
@@ -604,7 +608,7 @@ impl<B, E, Block, RA> Client<B, E, Block, RA> where
 	/// Generate CHT-based proof for roots of changes tries at given blocks.
 	fn changes_trie_roots_proof<I: IntoIterator<Item=NumberFor<Block>>>(
 		&self,
-		cht_size: u64,
+		cht_size: NumberFor<Block>,
 		blocks: I
 	) -> error::Result<Vec<Vec<u8>>> {
 		// most probably we have touched several changes tries that are parts of the single CHT
@@ -623,7 +627,7 @@ impl<B, E, Block, RA> Client<B, E, Block, RA> where
 	/// Generates CHT-based proof for roots of changes tries at given blocks (that are part of single CHT).
 	fn changes_trie_roots_proof_at_cht(
 		&self,
-		cht_size: u64,
+		cht_size: NumberFor<Block>,
 		cht_num: NumberFor<Block>,
 		blocks: Vec<NumberFor<Block>>
 	) -> error::Result<Vec<Vec<u8>>> {
