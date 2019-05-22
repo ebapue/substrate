@@ -48,6 +48,7 @@ pub use self::prune::{prune, oldest_non_pruned_trie};
 
 use hash_db::Hasher;
 use crate::backend::Backend;
+use parity_codec::{Decode, Encode};
 use primitives;
 use crate::changes_trie::build::prepare_input;
 use crate::overlayed_changes::OverlayedChanges;
@@ -57,49 +58,133 @@ use trie::{DBValue, trie_root};
 /// Changes that are made outside of extrinsics are marked with this index;
 pub const NO_EXTRINSIC_INDEX: u32 = 0xffffffff;
 
+pub trait BlockNumber:
+	Send + Sync + 'static +
+	::std::fmt::Display +
+	Clone +
+	From<u32> +
+	PartialEq + Ord +
+	::std::ops::Add<Self, Output=Self> + ::std::ops::Sub<Self, Output=Self> +
+	::std::ops::Mul<Self, Output=Self> + ::std::ops::Div<Self, Output=Self> +
+	::std::ops::Rem<Self, Output=Self> +
+	::std::ops::AddAssign<Self> +
+	num_traits::CheckedMul + num_traits::CheckedSub +
+	Decode + Encode
+{}
+
+impl<T> BlockNumber for T where T:
+	Send + Sync + 'static +
+	::std::fmt::Display +
+	Clone +
+	From<u32> +
+	PartialEq + Ord +
+	::std::ops::Add<Self, Output=Self> + ::std::ops::Sub<Self, Output=Self> +
+	::std::ops::Mul<Self, Output=Self> + ::std::ops::Div<Self, Output=Self> +
+	::std::ops::Rem<Self, Output=Self> +
+	::std::ops::AddAssign<Self> +
+	num_traits::CheckedMul + num_traits::CheckedSub +
+	Decode + Encode,
+{}
+
+#[derive(Debug)]
+pub struct BlocksRange<Number: BlockNumber> {
+	current: Number,
+	end: Number,
+	step: Number,
+}
+
+impl<Number: BlockNumber> BlocksRange<Number> {
+	pub fn new(begin: Number, end: Number, step: Number) -> Self {
+		BlocksRange {
+			current: begin,
+			end,
+			step,
+		}
+	}
+}
+
+impl<Number: BlockNumber> Iterator for BlocksRange<Number> {
+	type Item = Number;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		if self.current >= self.end {
+			return None;
+		}
+
+		let current = Some(self.current.clone());
+		self.current += self.step.clone();
+		current
+	}
+}
+
 /// Block identifier that could be used to determine fork of this block.
 #[derive(Debug)]
-pub struct AnchorBlockId<Hash: ::std::fmt::Debug> {
+pub struct AnchorBlockId<Hash: ::std::fmt::Debug, Number: BlockNumber> {
 	/// Hash of this block.
 	pub hash: Hash,
 	/// Number of this block.
-	pub number: u64,
+	pub number: Number,
 }
 
 /// Changes trie storage. Provides access to trie roots and trie nodes.
-pub trait RootsStorage<H: Hasher>: Send + Sync {
+pub trait RootsStorage<H: Hasher, Number: BlockNumber>: Send + Sync {
+	/// Resolve hash of the block into anchor.
+	fn build_anchor(&self, hash: H::Out) -> Result<AnchorBlockId<H::Out, Number>, String>;
 	/// Get changes trie root for the block with given number which is an ancestor (or the block
 	/// itself) of the anchor_block (i.e. anchor_block.number >= block).
-	fn root(&self, anchor: &AnchorBlockId<H::Out>, block: u64) -> Result<Option<H::Out>, String>;
+	fn root(&self, anchor: &AnchorBlockId<H::Out, Number>, block: Number) -> Result<Option<H::Out>, String>;
 }
 
 /// Changes trie storage. Provides access to trie roots and trie nodes.
-pub trait Storage<H: Hasher>: RootsStorage<H> {
+pub trait Storage<H: Hasher, Number: BlockNumber>: RootsStorage<H, Number> {
 	/// Get a trie node.
 	fn get(&self, key: &H::Out, prefix: &[u8]) -> Result<Option<DBValue>, String>;
+}
+
+/// Changes trie storage -> trie backend essence adapter.
+pub struct TrieBackendStorageAdapter<'a, H: Hasher, Number: BlockNumber>(pub &'a Storage<H, Number>);
+
+impl<'a, H: Hasher, N: BlockNumber> crate::TrieBackendStorage<H> for TrieBackendStorageAdapter<'a, H, N> {
+	type Overlay = trie::MemoryDB<H>;
+
+	fn get(&self, key: &H::Out, prefix: &[u8]) -> Result<Option<DBValue>, String> {
+		self.0.get(key, prefix)
+	}
 }
 
 /// Changes trie configuration.
 pub type Configuration = primitives::ChangesTrieConfiguration;
 
 /// Compute the changes trie root and transaction for given block.
-/// Returns None if there's no data to perform computation.
-pub fn compute_changes_trie_root<'a, B: Backend<H>, S: Storage<H>, H: Hasher>(
+/// Returns Err(()) if unknown `parent_hash` has been passed.
+/// Returns Ok(None) if there's no data to perform computation.
+/// Panics if background storage returns an error.
+pub fn compute_changes_trie_root<'a, B: Backend<H>, S: Storage<H, Number>, H: Hasher, Number: BlockNumber>(
 	backend: &B,
 	storage: Option<&'a S>,
 	changes: &OverlayedChanges,
-	parent: &'a AnchorBlockId<H::Out>,
-) -> Option<(H::Out, Vec<(Vec<u8>, Vec<u8>)>)>
+	parent_hash: H::Out,
+) -> Result<Option<(H::Out, Vec<(Vec<u8>, Vec<u8>)>)>, ()>
 	where
-		&'a S: TrieBackendStorage<H>,
-		H::Out: Ord,
+		H::Out: Ord + 'static,
 {
-	let input_pairs = prepare_input::<B, S, H>(backend, storage, changes, parent)
-		.expect("storage is not allowed to fail within runtime")?;
-	let transaction = input_pairs.into_iter()
-		.map(Into::into)
-		.collect::<Vec<_>>();
-	let root = trie_root::<H, _, _, _>(transaction.iter().map(|(k, v)| (&*k, &*v)));
+	let storage = match storage {
+		Some(storage) => storage,
+		None => return Ok(None),
+	};
+	let parent = storage.build_anchor(parent_hash).map_err(|_| ())?;
 
-	Some((root, transaction))
+	let input_pairs = prepare_input::<B, S, H, Number>(backend, storage, changes, &parent)
+		.expect("storage is not allowed to fail within runtime");
+	match input_pairs {
+		Some(input_pairs) => {
+			let transaction = input_pairs.into_iter()
+				.map(Into::into)
+				.collect::<Vec<_>>();
+			let root = trie_root::<H, _, _, _>(transaction.iter().map(|(k, v)| (&*k, &*v)));
+
+			Ok(Some((root, transaction)))
+		},
+		None => Ok(None),
+	}
 }

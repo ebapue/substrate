@@ -30,7 +30,7 @@ use parity_codec::Decode;
 use trie::DBValue;
 use runtime_primitives::generic::BlockId;
 use runtime_primitives::traits::{Block as BlockT, Header as HeaderT, Zero, UniqueSaturatedFrom,
-	UniqueSaturatedInto, SaturatedConversion, CheckedConversion};
+	UniqueSaturatedInto, CheckedConversion};
 use crate::DatabaseSettings;
 
 /// Number of columns in the db. Must be the same for both full && light dbs.

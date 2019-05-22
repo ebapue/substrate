@@ -537,7 +537,7 @@ where
 	H::Out: Ord,
 {
 	states: RwLock<HashMap<Block::Hash, InMemory<H>>>,
-	changes_trie_storage: ChangesTrieStorage<H>,
+	changes_trie_storage: ChangesTrieStorage<Block, H>,
 	blockchain: Blockchain<Block>,
 }
 
@@ -587,7 +587,7 @@ where
 	type BlockImportOperation = BlockImportOperation<Block, H>;
 	type Blockchain = Blockchain<Block>;
 	type State = InMemory<H>;
-	type ChangesTrieStorage = ChangesTrieStorage<H>;
+	type ChangesTrieStorage = ChangesTrieStorage<Block, H>;
 
 	fn begin_operation(&self) -> error::Result<Self::BlockImportOperation> {
 		let old_state = self.state_at(BlockId::Hash(Default::default()))?;
@@ -628,7 +628,7 @@ where
 				if let Some(changes_trie_update) = operation.changes_trie_update {
 					let changes_trie_root: H::Out = changes_trie_root.into();
 					self.changes_trie_storage.0.insert(
-						(*header.number()).saturated_into::<u64>(),
+						*header.number(),
 						changes_trie_root,
 						changes_trie_update
 					);
@@ -705,20 +705,24 @@ where
 }
 
 /// Prunable in-memory changes trie storage.
-pub struct ChangesTrieStorage<H: Hasher>(InMemoryChangesTrieStorage<H>);
-impl<H: Hasher> backend::PrunableStateChangesTrieStorage<H> for ChangesTrieStorage<H> {
-	fn oldest_changes_trie_block(&self, _config: &ChangesTrieConfiguration, _best_finalized: u64) -> u64 {
-		0
+pub struct ChangesTrieStorage<Block: BlockT, H: Hasher>(InMemoryChangesTrieStorage<H, NumberFor<Block>>);
+impl<Block: BlockT, H: Hasher> backend::PrunableStateChangesTrieStorage<Block, H> for ChangesTrieStorage<Block, H> {
+	fn oldest_changes_trie_block(&self, _config: &ChangesTrieConfiguration, _best_finalized: NumberFor<Block>) -> NumberFor<Block> {
+		Zero::zero()
 	}
 }
 
-impl<H: Hasher> state_machine::ChangesTrieRootsStorage<H> for ChangesTrieStorage<H> {
-	fn root(&self, anchor: &ChangesTrieAnchorBlockId<H::Out>, block: u64) -> Result<Option<H::Out>, String> {
+impl<Block: BlockT, H: Hasher> state_machine::ChangesTrieRootsStorage<H, NumberFor<Block>> for ChangesTrieStorage<Block, H> {
+	fn build_anchor(&self, hash: H::Out) -> Result<state_machine::ChangesTrieAnchorBlockId<H::Out, NumberFor<Block>>, String> {
+		unimplemented!("TODO")
+	}
+
+	fn root(&self, anchor: &ChangesTrieAnchorBlockId<H::Out, NumberFor<Block>>, block: NumberFor<Block>) -> Result<Option<H::Out>, String> {
 		self.0.root(anchor, block)
 	}
 }
 
-impl<H: Hasher> state_machine::ChangesTrieStorage<H> for ChangesTrieStorage<H> {
+impl<Block: BlockT, H: Hasher> state_machine::ChangesTrieStorage<H, NumberFor<Block>> for ChangesTrieStorage<Block, H> {
 	fn get(&self, key: &H::Out, prefix: &[u8]) -> Result<Option<state_machine::DBValue>, String> {
 		self.0.get(key, prefix)
 	}
